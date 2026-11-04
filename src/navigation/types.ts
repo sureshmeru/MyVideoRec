@@ -5,7 +5,7 @@ import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 
 export type TabParamList = {
   Home: undefined;
-  Record: undefined;
+  Camera: undefined;
   Videos: undefined;
   Trips: undefined;
   Settings: undefined;

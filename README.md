@@ -42,10 +42,37 @@ autolinked; after installing or upgrading native dependencies, install iOS pods 
 native app. The JavaScript bundle alone cannot add native camera support to an already-installed
 binary.
 
+## Live object detection
+
+The Camera tab presents a full-screen live preview with recording controls and includes a bundled YOLOX-Nano COCO TensorFlow Lite model from
+[litert-community/yolox-nano-litert](https://huggingface.co/litert-community/yolox-nano-litert/tree/50af9253fff11c508b10f462512caa1b61818f6d)
+(Apache-2.0; SHA-256 `3a621c40141760da2435891093616e4d8cfa8748000c72ced4e536d694f970e4`).
+The detector runs on the rear-camera frame processor at up to 5 FPS, drops frames while inference
+is busy, letterboxes to 416×416 BGR, decodes the model's documented 3549×85 output, and draws
+road-relevant COCO boxes with Skia. Detection output is frame-local; tracking IDs are intentionally
+unset until a tracker is implemented.
+
+Recorded camera segments are finalized with a compass heading, local time and date, and GPS speed
+burned into the video. Location access is requested when recording starts; if unavailable, the speed
+is shown as `-- KMPH`. Overlay processing re-encodes each segment, so saving can take longer than
+the recording itself.
+
+The model recognizes COCO classes only, including cars, motorcycles, bicycles, buses, trucks,
+people, selected animals, traffic lights, and stop signs. It does not recognize auto-rickshaws,
+Indian speed-limit signs, arbitrary road obstacles, or the full set of traffic signs. It estimates
+no distances or collision risk. On Android the model uses the default CPU delegate; on iOS it requests
+Core ML. Android copies the source model into a generated `res/raw` resource and loads it locally,
+so model initialization does not depend on Metro or network access. iOS loads the model from the
+React Native asset bundle. AI is reported unavailable if the model/delegate cannot initialize,
+without substituting mock results. Device performance and iOS integration still require
+physical-device validation. The tested x86_64 Android emulator could not initialize its GPU
+delegate; this is reported as unavailable rather than silently switching to CPU inference.
+
 ## Permissions and privacy
 
-- Camera access is requested when you choose to allow the preview or start recording; recording
-  requires it.
+- The app opens on the full-screen Camera tab and requests camera access for its live preview when needed.
+  Recording also requires camera access. If permission is denied, use the on-screen action to try
+  again or change access in system settings.
 - Microphone access is requested only when audio is enabled in Camera settings and a recording is
   started. Audio is off by default.
 - Android starts a camera foreground service while recording. Android 14 and later require
@@ -112,9 +139,17 @@ cd android
 .\gradlew.bat :app:assembleDebug
 ```
 
-The Android project is configured for NDK 27.1.12297006. Install that NDK version through Android
-Studio's SDK Manager before building on another machine. The prior local NDK 26.1 installation was
-incomplete; using the configured 27.1 version, the Android debug build succeeds without an override.
+For an x86_64 emulator using Metro on port 8083:
+
+```powershell
+.\gradlew.bat :app:installDebug -PreactNativeArchitectures=x86_64 -PreactNativeDevServerPort=8083
+```
+
+The project declares NDK 27.1.12297006, and some native dependencies use the Android Gradle
+Plugin's default NDK. In this environment that also required NDK 26.1.10909125; install any NDK
+version requested by Gradle through Android Studio's SDK Manager. The emulator smoke build and
+installation were verified on Windows; physical-device inference and iOS builds remain unverified
+here.
 
 These automated checks do not replace physical-device testing. Before relying on the app, test
 camera permissions, front/rear selection, segment finalization, app backgrounding, low storage,

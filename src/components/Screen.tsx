@@ -5,27 +5,40 @@ import {SafeAreaView} from 'react-native-safe-area-context';
 import {colors, commonStyles, spacing} from '../app/theme';
 
 interface ScreenProps {
-  title: string;
+  title?: string;
   subtitle?: string;
   children: React.ReactNode;
   scroll?: boolean;
+  fullscreen?: boolean;
 }
 
-export function Screen({title, subtitle, children, scroll = true}: ScreenProps) {
+export function Screen({
+  title,
+  subtitle,
+  children,
+  scroll = true,
+  fullscreen = false,
+}: ScreenProps) {
   const content = (
-    <View style={commonStyles.content}>
-      <View style={styles.headingBlock}>
-        <Text style={commonStyles.heading}>{title}</Text>
-        {subtitle ? <Text style={commonStyles.subheading}>{subtitle}</Text> : null}
-      </View>
+    <View style={fullscreen ? styles.fullscreenContent : commonStyles.content}>
+      {title ? (
+        <View style={styles.headingBlock}>
+          <Text style={commonStyles.heading}>{title}</Text>
+          {subtitle ? (
+            <Text style={commonStyles.subheading}>{subtitle}</Text>
+          ) : null}
+        </View>
+      ) : null}
       {children}
     </View>
   );
 
   return (
     <SafeAreaView style={commonStyles.page} edges={['top', 'left', 'right']}>
-      {scroll ? (
-        <ScrollView contentContainerStyle={styles.scrollContent}>{content}</ScrollView>
+      {scroll && !fullscreen ? (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {content}
+        </ScrollView>
       ) : (
         content
       )}
@@ -36,6 +49,7 @@ export function Screen({title, subtitle, children, scroll = true}: ScreenProps) 
 const styles = StyleSheet.create({
   headingBlock: {gap: spacing.xs},
   scrollContent: {flexGrow: 1},
+  fullscreenContent: {flex: 1},
   card: {
     backgroundColor: colors.surface,
     borderColor: colors.border,

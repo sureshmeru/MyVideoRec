@@ -1,7 +1,10 @@
 import {NativeModules, Platform} from 'react-native';
 
 interface RecordingForegroundServiceModule {
-  startRecordingService(recordAudio: boolean): Promise<void>;
+  startRecordingService(
+    recordAudio: boolean,
+    trackLocation: boolean,
+  ): Promise<void>;
   stopRecordingService(): Promise<void>;
 }
 
@@ -12,6 +15,7 @@ const nativeModule = NativeModules
 
 export async function startRecordingForegroundService(
   recordAudio: boolean,
+  trackLocation: boolean,
 ): Promise<void> {
   if (Platform.OS !== 'android') {
     return;
@@ -21,7 +25,7 @@ export async function startRecordingForegroundService(
       'Android background recording support is unavailable. Rebuild and reinstall the app.',
     );
   }
-  await nativeModule.startRecordingService(recordAudio);
+  await nativeModule.startRecordingService(recordAudio, trackLocation);
 }
 
 export async function stopRecordingForegroundService(): Promise<void> {

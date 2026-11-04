@@ -86,7 +86,7 @@ export function DashboardScreen() {
         </View>
         {recordingStatus === 'error' ? (
           <Label color={colors.danger}>
-            Recording stopped. Open Record for the error details.
+            Recording stopped. Open Camera for the error details.
           </Label>
         ) : null}
       </Card>
@@ -97,7 +97,7 @@ export function DashboardScreen() {
             ? 'Open recording controls'
             : 'Start a recording'
         }
-        onPress={() => navigation.navigate('Record')}
+        onPress={() => navigation.navigate('Camera')}
       />
 
       <View style={styles.sectionHeader}>

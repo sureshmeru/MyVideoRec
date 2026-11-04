@@ -1,6 +1,9 @@
 import type {CameraDeviceFormat} from 'react-native-vision-camera';
 
-import {selectRecordingFormat} from '../src/features/recording/selectRecordingFormat';
+import {
+  getRecordingConfiguration,
+  selectRecordingFormat,
+} from '../src/features/recording/selectRecordingFormat';
 
 function format(width: number, height: number, minFps: number, maxFps: number) {
   return {
@@ -20,12 +23,18 @@ describe('selectRecordingFormat', () => {
       format(1280, 720, 30, 60),
     ];
 
-    expect(selectRecordingFormat(formats)).toBe(requestedFormat);
+    expect(selectRecordingFormat(formats, '1080p', 30)).toBe(requestedFormat);
   });
 
-  it('uses a device-reported fallback when 30 fps is unavailable', () => {
+  it('chooses a supported resolution and frame rate when preferences are unavailable', () => {
     const availableFormat = format(1280, 720, 15, 24);
-    expect(selectRecordingFormat([availableFormat])).toBe(availableFormat);
-    expect(selectRecordingFormat([])).toBeUndefined();
+    expect(
+      getRecordingConfiguration([availableFormat], '1080p', 30),
+    ).toEqual({
+      resolution: '720p',
+      frameRate: 24,
+      format: availableFormat,
+    });
+    expect(getRecordingConfiguration([], '1080p', 30)).toBeUndefined();
   });
 });

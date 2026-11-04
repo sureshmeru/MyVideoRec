@@ -37,7 +37,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MileVDO Meru records audio only when you enable microphone recording.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>MileVDO Meru records trip location only when you explicitly start trip tracking.</string>
+	<string>MileVDO Meru uses your location while recording to add GPS speed to the video overlay, or when you explicitly start trip tracking.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>

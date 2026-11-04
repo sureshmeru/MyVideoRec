@@ -8,15 +8,19 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 class RecordingForegroundService : Service() {
   companion object {
     const val ACTION_START = "com.myvideorec.action.START_RECORDING"
     const val EXTRA_RECORD_AUDIO = "recordAudio"
+    const val EXTRA_TRACK_LOCATION = "trackLocation"
     private const val CHANNEL_ID = "recording"
     private const val NOTIFICATION_ID = 1001
   }
+
+  private var wakeLock: PowerManager.WakeLock? = null
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -33,11 +37,39 @@ class RecordingForegroundService : Service() {
       if (intent.getBooleanExtra(EXTRA_RECORD_AUDIO, false)) {
         serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
       }
+      if (intent.getBooleanExtra(EXTRA_TRACK_LOCATION, false)) {
+        serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+      }
       startForeground(NOTIFICATION_ID, notification, serviceType)
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+    acquireWakeLock()
     return START_NOT_STICKY
+  }
+
+  override fun onDestroy() {
+    wakeLock?.let { lock ->
+      if (lock.isHeld) {
+        lock.release()
+      }
+    }
+    wakeLock = null
+    super.onDestroy()
+  }
+
+  private fun acquireWakeLock() {
+    if (wakeLock?.isHeld == true) {
+      return
+    }
+    val powerManager = getSystemService(PowerManager::class.java)
+    wakeLock = powerManager.newWakeLock(
+      PowerManager.PARTIAL_WAKE_LOCK,
+      "$packageName:Recording",
+    ).apply {
+      setReferenceCounted(false)
+      acquire()
+    }
   }
 
   private fun createNotificationChannel() {

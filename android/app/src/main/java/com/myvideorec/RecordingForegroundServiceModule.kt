@@ -13,11 +13,16 @@ class RecordingForegroundServiceModule(
   override fun getName(): String = "RoadwatchRecordingForegroundService"
 
   @ReactMethod
-  fun startRecordingService(recordAudio: Boolean, promise: Promise) {
+  fun startRecordingService(
+    recordAudio: Boolean,
+    trackLocation: Boolean,
+    promise: Promise,
+  ) {
     try {
       val intent = Intent(reactApplicationContext, RecordingForegroundService::class.java).apply {
         action = RecordingForegroundService.ACTION_START
         putExtra(RecordingForegroundService.EXTRA_RECORD_AUDIO, recordAudio)
+        putExtra(RecordingForegroundService.EXTRA_TRACK_LOCATION, trackLocation)
       }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         reactApplicationContext.startForegroundService(intent)

@@ -23,13 +23,17 @@ const Tabs = createBottomTabNavigator<TabParamList>();
 
 const tabLabels: Record<keyof TabParamList, string> = {
   Home: 'Home',
-  Record: 'Record',
+  Camera: 'Camera',
   Videos: 'Videos',
   Trips: 'Trips',
   Settings: 'Settings',
 };
 
-function renderTabIcon(routeName: keyof TabParamList, color: string, size: number) {
+function renderTabIcon(
+  routeName: keyof TabParamList,
+  color: string,
+  size: number,
+) {
   const iconProps = {
     fill: 'none',
     stroke: color,
@@ -46,11 +50,14 @@ function renderTabIcon(routeName: keyof TabParamList, color: string, size: numbe
           <Path {...iconProps} d="M5 9v12h14V9M9 21v-7h6v7" />
         </Svg>
       );
-    case 'Record':
+    case 'Camera':
       return (
         <Svg width={size} height={size} viewBox="0 0 24 24">
-          <Circle {...iconProps} cx="12" cy="12" r="9" />
-          <Circle {...iconProps} cx="12" cy="12" r="3" />
+          <Path
+            {...iconProps}
+            d="M4 8h4l2-3h5l2 3h3a2 2 0 0 1 2 2v9H2v-9a2 2 0 0 1 2-2Z"
+          />
+          <Circle {...iconProps} cx="12" cy="13" r="4" />
         </Svg>
       );
     case 'Videos':
@@ -85,6 +92,7 @@ function renderTabIcon(routeName: keyof TabParamList, color: string, size: numbe
 function MainTabs() {
   return (
     <Tabs.Navigator
+      initialRouteName="Camera"
       screenOptions={({route}) => ({
         headerShown: false,
         tabBarIcon: ({color, size}) => renderTabIcon(route.name, color, size),
@@ -101,7 +109,7 @@ function MainTabs() {
         tabBarAccessibilityLabel: tabLabels[route.name],
       })}>
       <Tabs.Screen name="Home" component={DashboardScreen} />
-      <Tabs.Screen name="Record" component={RecordingScreen} />
+      <Tabs.Screen name="Camera" component={RecordingScreen} />
       <Tabs.Screen name="Videos" component={LibraryScreen} />
       <Tabs.Screen name="Trips" component={TripsScreen} />
       <Tabs.Screen name="Settings" component={SettingsScreen} />
@@ -125,12 +133,36 @@ export function AppNavigator() {
           component={MainTabs}
           options={{headerShown: false}}
         />
-        <Stack.Screen name="VideoPlayback" component={PlaybackScreen} options={{title: 'Clip'}} />
-        <Stack.Screen name="StorageManager" component={StorageScreen} options={{title: 'Storage'}} />
-        <Stack.Screen name="CloudProviders" component={CloudProvidersScreen} options={{title: 'Backups'}} />
-        <Stack.Screen name="CameraSettings" component={CameraSettingsScreen} options={{title: 'Camera'}} />
-        <Stack.Screen name="PrivacySettings" component={PrivacySettingsScreen} options={{title: 'Privacy'}} />
-        <Stack.Screen name="Diagnostics" component={DiagnosticsScreen} options={{title: 'Diagnostics'}} />
+        <Stack.Screen
+          name="VideoPlayback"
+          component={PlaybackScreen}
+          options={{title: 'Clip'}}
+        />
+        <Stack.Screen
+          name="StorageManager"
+          component={StorageScreen}
+          options={{title: 'Storage'}}
+        />
+        <Stack.Screen
+          name="CloudProviders"
+          component={CloudProvidersScreen}
+          options={{title: 'Backups'}}
+        />
+        <Stack.Screen
+          name="CameraSettings"
+          component={CameraSettingsScreen}
+          options={{title: 'Camera'}}
+        />
+        <Stack.Screen
+          name="PrivacySettings"
+          component={PrivacySettingsScreen}
+          options={{title: 'Privacy'}}
+        />
+        <Stack.Screen
+          name="Diagnostics"
+          component={DiagnosticsScreen}
+          options={{title: 'Diagnostics'}}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

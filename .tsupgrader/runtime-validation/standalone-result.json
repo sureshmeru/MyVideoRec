@@ -1,0 +1,99 @@
+{
+  "planHash": "b1ee8835fee1070904c7a75b6b18336e2858bcf018a4eff2b02848382e05231a",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-11-02T05:33:47.9816767Z",
+  "retryCount": 2,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 0,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "typescript-no-emit",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "",
+        "durationMs": 23956
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E MyVideoRec@0.0.1 test\r\n\u003E jest --runInBand\r\n\r\nPASS __tests__/App.test.tsx\r\nPASS __tests__/selectRecordingFormat.test.ts\r\nPASS __tests__/database.test.ts\r\nPASS __tests__/shareRecording.test.ts\r\nPASS __tests__/cleanupPolicy.test.ts\r\nPASS __tests__/recordingStore.test.ts\r\nPASS __tests__/formatBytes.test.ts\r\nPASS __tests__/videoSettingsStore.test.ts\r\nPASS __tests__/cameraCapabilities.test.ts\r\nPASS __tests__/gpsPolicy.test.ts\r\n\r\nTest Suites: 10 passed, 10 total\r\nTests:       18 passed, 18 total\r\nSnapshots:   0 total\r\nTime:        6.183 s\r\nRan all test suites.\r\n",
+        "durationMs": 12170,
+        "testResults": {
+          "testFramework": "jest",
+          "runnerDetectedFrom": "package_json",
+          "testsTotal": 18,
+          "testsPassed": 18,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": false
+        }
+      },
+      {
+        "name": "lint-pass",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E MyVideoRec@0.0.1 lint\r\n\u003E eslint .\r\n\r\n",
+        "durationMs": 13467
+      }
+    ],
+    "executions": [
+      {
+        "source": "typescript-no-emit",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npx.CMD",
+        "args": [
+          "tsc",
+          "--noEmit"
+        ],
+        "cwd": "D:\\PrimeSoft\\ReactNative\\MyVideoRec",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "test",
+          "--",
+          "--runInBand"
+        ],
+        "cwd": "D:\\PrimeSoft\\ReactNative\\MyVideoRec",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "lint-pass",
+        "resolvedExecutable": "C:\\Program Files\\nodejs\\npm.CMD",
+        "args": [
+          "run",
+          "lint"
+        ],
+        "cwd": "D:\\PrimeSoft\\ReactNative\\MyVideoRec",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      }
+    ]
+  }
+}

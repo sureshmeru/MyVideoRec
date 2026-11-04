@@ -4,6 +4,7 @@ import {
   AppStateStatus,
   PermissionsAndroid,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -16,18 +17,34 @@ import {
   useMicrophonePermission,
 } from 'react-native-vision-camera';
 import type {VideoFile} from 'react-native-vision-camera';
+import Geolocation from '@react-native-community/geolocation';
 import * as RNFS from 'react-native-fs';
 import {useQueryClient} from '@tanstack/react-query';
+import Svg, {Circle, Path, Rect, Text as SvgText} from 'react-native-svg';
 
 import {colors, spacing} from '../app/theme';
-import {Card, Screen} from '../components/Screen';
-import {ActionButton, Label, StatusBadge} from '../components/UI';
+import {DetectionOverlay} from '../components/DetectionOverlay';
+import {Screen} from '../components/Screen';
+import {StatusBadge} from '../components/UI';
 import {saveRecording} from '../data/database';
-import type {CameraPosition, Recording} from '../data/models';
+import type {CameraPosition, Recording, TripPoint} from '../data/models';
+import {useVehicleDetector} from '../features/ai/useVehicleDetector';
+import {estimateSpeedMps} from '../features/trips/gpsPolicy';
+import {requestForegroundLocationPermission} from '../features/trips/locationPermissions';
+import {
+  formatHeading,
+  formatSpeed,
+} from '../features/recording/cameraTelemetry';
+import type {CameraTelemetrySample} from '../features/recording/cameraTelemetry';
+import {
+  applyVideoOverlay,
+  startHeadingUpdates,
+  stopHeadingUpdates,
+  subscribeToHeading,
+} from '../features/recording/cameraTelemetryNative';
 import {useSettingsStore} from '../features/recording/settingsStore';
-import {selectRecordingFormat} from '../features/recording/selectRecordingFormat';
+import {getRecordingConfiguration} from '../features/recording/selectRecordingFormat';
 import {useRecordingStore} from '../features/recording/recordingStore';
-import {formatBytes} from '../features/storage/formatBytes';
 import {cleanupOldestRecordingsUntil} from '../features/storage/recordingFileService';
 import {useTripStore} from '../features/trips/tripStore';
 import {
@@ -47,6 +64,8 @@ interface FinalizedCameraSegment {
   cameraId: string;
   cameraPosition: CameraPosition;
   frameRate: number;
+  startedAtMs: number;
+  telemetrySamples: CameraTelemetrySample[];
 }
 
 export function RecordingScreen() {
@@ -55,26 +74,44 @@ export function RecordingScreen() {
   const rearCameraRef = useRef<Camera>(null);
   const activeRef = useRef(false);
   const startInProgressRef = useRef(false);
+  const cameraPermissionRequestStartedRef = useRef(false);
   const dualRecordingRef = useRef(false);
   const expectedSegmentsRef = useRef(0);
   const finalizedSegmentsRef = useRef<FinalizedCameraSegment[]>([]);
   const segmentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartedAtRef = useRef<number | null>(null);
+  const locationWatchIdRef = useRef<number | null>(null);
+  const lastLocationRef = useRef<TripPoint | null>(null);
+  const latestHeadingRef = useRef<number | null>(null);
+  const latestSpeedRef = useRef<number | null>(null);
+  const telemetrySamplesRef = useRef<CameraTelemetrySample[]>([]);
   const startSegmentRef = useRef<() => Promise<void>>(async () => {});
-  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+  const [appState, setAppState] = useState<AppStateStatus>(
+    AppState.currentState,
+  );
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [microphoneGranted, setMicrophoneGranted] = useState(false);
   const [dualCaptureEnabled, setDualCaptureEnabled] = useState(false);
-  const [concurrentCameraPairs, setConcurrentCameraPairs] = useState<string[][]>([]);
+  const [concurrentCameraPairs, setConcurrentCameraPairs] = useState<
+    string[][]
+  >([]);
   const [capabilityError, setCapabilityError] = useState<string | null>(null);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
+  const [headingDegrees, setHeadingDegrees] = useState<number | null>(null);
+  const [speedKph, setSpeedKph] = useState<number | null>(null);
+  const [clockTimestampMs, setClockTimestampMs] = useState(Date.now());
   const queryClient = useQueryClient();
   const isFocused = useIsFocused();
   const cameraPosition = useSettingsStore(state => state.cameraPosition);
   const setCameraPosition = useSettingsStore(state => state.setCameraPosition);
   const audioEnabled = useSettingsStore(state => state.audioEnabled);
   const segmentSeconds = useSettingsStore(state => state.segmentSeconds);
-  const loopCleanupEnabled = useSettingsStore(state => state.loopCleanupEnabled);
+  const loopCleanupEnabled = useSettingsStore(
+    state => state.loopCleanupEnabled,
+  );
+  const videoResolution = useSettingsStore(state => state.videoResolution);
+  const frameRate = useSettingsStore(state => state.frameRate);
   const status = useRecordingStore(state => state.status);
   const elapsedSeconds = useRecordingStore(state => state.elapsedSeconds);
   const recordingError = useRecordingStore(state => state.error);
@@ -85,39 +122,191 @@ export function RecordingScreen() {
   const device = useCameraDevice(cameraPosition);
   const frontDevice = useCameraDevice('front');
   const rearDevice = useCameraDevice('back');
-  const {hasPermission: hasCameraPermission, requestPermission: requestCameraPermission} =
-    useCameraPermission();
+  const {
+    hasPermission: hasCameraPermission,
+    requestPermission: requestCameraPermission,
+  } = useCameraPermission();
   const {
     hasPermission: hasMicrophonePermission,
     requestPermission: requestMicrophonePermission,
   } = useMicrophonePermission();
 
-  const format = useMemo(
-    () => selectRecordingFormat(device?.formats ?? []),
-    [device?.formats],
+  useEffect(() => {
+    if (
+      !isFocused ||
+      hasCameraPermission ||
+      cameraPermissionRequestStartedRef.current
+    ) {
+      return;
+    }
+
+    cameraPermissionRequestStartedRef.current = true;
+    requestCameraPermission()
+      .then(granted => {
+        if (!granted) {
+          setCameraError(
+            'Camera permission is needed for the live preview. Allow access to continue.',
+          );
+        }
+      })
+      .catch(error => {
+        setCameraError(
+          error instanceof Error
+            ? error.message
+            : 'Camera permission request failed.',
+        );
+      });
+  }, [hasCameraPermission, isFocused, requestCameraPermission]);
+
+  const recordingConfiguration = useMemo(
+    () =>
+      getRecordingConfiguration(
+        device?.formats ?? [],
+        videoResolution,
+        frameRate,
+      ),
+    [device?.formats, frameRate, videoResolution],
   );
-  const selectedFps = format
-    ? Math.max(format.minFps, Math.min(30, format.maxFps))
-    : 30;
-  const frontFormat = useMemo(
-    () => selectRecordingFormat(frontDevice?.formats ?? []),
-    [frontDevice?.formats],
+  const format = recordingConfiguration?.format;
+  const selectedFps = recordingConfiguration?.frameRate ?? frameRate;
+  const frontRecordingConfiguration = useMemo(
+    () =>
+      getRecordingConfiguration(
+        frontDevice?.formats ?? [],
+        videoResolution,
+        frameRate,
+      ),
+    [frontDevice?.formats, frameRate, videoResolution],
   );
-  const rearFormat = useMemo(
-    () => selectRecordingFormat(rearDevice?.formats ?? []),
-    [rearDevice?.formats],
+  const frontFormat = frontRecordingConfiguration?.format;
+  const frontFps = frontRecordingConfiguration?.frameRate ?? frameRate;
+  const rearRecordingConfiguration = useMemo(
+    () =>
+      getRecordingConfiguration(
+        rearDevice?.formats ?? [],
+        videoResolution,
+        frameRate,
+      ),
+    [frameRate, rearDevice?.formats, videoResolution],
   );
-  const frontFps = frontFormat
-    ? Math.max(frontFormat.minFps, Math.min(30, frontFormat.maxFps))
-    : 30;
-  const rearFps = rearFormat
-    ? Math.max(rearFormat.minFps, Math.min(30, rearFormat.maxFps))
-    : 30;
+  const rearFormat = rearRecordingConfiguration?.format;
+  const rearFps = rearRecordingConfiguration?.frameRate ?? frameRate;
   const dualCaptureSupported = supportsConcurrentFrontRear(
     concurrentCameraPairs,
     frontDevice?.id,
     rearDevice?.id,
   );
+  const roadCameraAvailable =
+    dualCaptureEnabled && dualCaptureSupported
+      ? Boolean(rearDevice && rearFormat)
+      : cameraPosition === 'back';
+  const vehicleDetector = useVehicleDetector(roadCameraAvailable);
+
+  useEffect(() => {
+    const timer = setInterval(() => setClockTimestampMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isFocused && !activeRef.current) {
+      return;
+    }
+    startHeadingUpdates();
+    const subscription = subscribeToHeading(value => {
+      const validHeading =
+        value !== null && Number.isFinite(value) && value >= 0 && value < 360
+          ? value
+          : null;
+      latestHeadingRef.current = validHeading;
+      setHeadingDegrees(validHeading);
+    });
+    return () => {
+      subscription.remove();
+      stopHeadingUpdates();
+    };
+  }, [isFocused]);
+
+  const stopLocationUpdates = useCallback(() => {
+    if (locationWatchIdRef.current !== null) {
+      Geolocation.clearWatch(locationWatchIdRef.current);
+      locationWatchIdRef.current = null;
+    }
+    lastLocationRef.current = null;
+  }, []);
+
+  const startLocationUpdates = useCallback(async () => {
+    const permissionGranted = await requestForegroundLocationPermission();
+    if (!permissionGranted) {
+      setSpeedKph(null);
+      latestSpeedRef.current = null;
+      setTelemetryError(
+        'Allow location access to include GPS speed in recordings.',
+      );
+      return false;
+    }
+
+    setTelemetryError(null);
+    if (locationWatchIdRef.current !== null) {
+      return true;
+    }
+
+    locationWatchIdRef.current = Geolocation.watchPosition(
+      position => {
+        const accuracyMeters = position.coords.accuracy;
+        if (
+          !Number.isFinite(accuracyMeters) ||
+          accuracyMeters < 0 ||
+          !Number.isFinite(position.coords.latitude) ||
+          !Number.isFinite(position.coords.longitude) ||
+          !Number.isFinite(position.timestamp)
+        ) {
+          return;
+        }
+        const currentPoint: TripPoint = {
+          tripId: 'camera-overlay',
+          recordedAt: new Date(position.timestamp).toISOString(),
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          speedMps: null,
+          accuracyMeters,
+        };
+        const providerSpeed = position.coords.speed;
+        let currentSpeedMps =
+          Number.isFinite(accuracyMeters) &&
+          accuracyMeters <= 30 &&
+          providerSpeed !== null &&
+          Number.isFinite(providerSpeed) &&
+          providerSpeed >= 0 &&
+          providerSpeed <= 55
+            ? providerSpeed
+            : null;
+        if (currentSpeedMps === null && accuracyMeters <= 20) {
+          currentSpeedMps = estimateSpeedMps(
+            lastLocationRef.current,
+            currentPoint,
+          );
+        }
+        lastLocationRef.current = currentPoint;
+        const nextSpeedKph =
+          currentSpeedMps === null ? null : currentSpeedMps * 3.6;
+        latestSpeedRef.current = nextSpeedKph;
+        setSpeedKph(nextSpeedKph);
+      },
+      error => {
+        setTelemetryError(`GPS speed unavailable: ${error.message}`);
+        latestSpeedRef.current = null;
+        setSpeedKph(null);
+      },
+      {
+        enableHighAccuracy: true,
+        distanceFilter: 0,
+        interval: 1000,
+        fastestInterval: 1000,
+        maximumAge: 1000,
+      },
+    );
+    return true;
+  }, []);
 
   useEffect(() => {
     setMicrophoneGranted(hasMicrophonePermission);
@@ -128,7 +317,9 @@ export function RecordingScreen() {
       .then(setConcurrentCameraPairs)
       .catch(error => {
         setCapabilityError(
-          error instanceof Error ? error.message : 'Camera capability detection failed.',
+          error instanceof Error
+            ? error.message
+            : 'Camera capability detection failed.',
         );
       });
   }, []);
@@ -143,6 +334,15 @@ export function RecordingScreen() {
       elapsedTimerRef.current = null;
     }
   }, []);
+
+  const displayTimestampMs =
+    status === 'recording' && sessionStartedAtRef.current !== null
+      ? sessionStartedAtRef.current + elapsedSeconds * 1000
+      : clockTimestampMs;
+  const displayDate = new Date(displayTimestampMs);
+  const telemetryDisplay =
+    `${displayDate.toLocaleTimeString([], {hour12: false})} | ` +
+    `${displayDate.toLocaleDateString()} | ${formatSpeed(speedKph)} KMPH`;
 
   const finishSegments = useCallback(
     async (segments: FinalizedCameraSegment[]) => {
@@ -163,18 +363,32 @@ export function RecordingScreen() {
             : video.path;
           const fileExtension = Platform.OS === 'ios' ? 'mov' : 'mp4';
           const destinationPath = `${RECORDINGS_DIRECTORY}/${id}.${fileExtension}`;
-          await RNFS.moveFile(filePath, destinationPath);
+          const overlayPath = `${RECORDINGS_DIRECTORY}/${id}.overlay.${fileExtension}`;
+          await applyVideoOverlay(
+            filePath,
+            overlayPath,
+            segment.startedAtMs,
+            segment.telemetrySamples,
+          );
+          await RNFS.moveFile(overlayPath, destinationPath);
+          await RNFS.unlink(filePath);
           const fileInfo = await RNFS.stat(destinationPath);
           if (Number(fileInfo.size) <= 0) {
-            throw new Error(`The finalized ${segment.cameraPosition} video is empty.`);
+            throw new Error(
+              `The finalized ${segment.cameraPosition} video is empty.`,
+            );
           }
-          const segmentEndedAt = new Date();
-          const startedAt = new Date(segmentEndedAt.getTime() - video.duration * 1000);
+          const startedAt = new Date(segment.startedAtMs);
+          const endedAtForVideo = new Date(
+            segment.startedAtMs + video.duration * 1000,
+          );
           recordings.push({
             id,
-            displayName: `${segment.cameraPosition === 'front' ? 'Front' : 'Rear'} Dashcam ${endedAt.toLocaleString()}`,
+            displayName: `${
+              segment.cameraPosition === 'front' ? 'Front' : 'Rear'
+            } Dashcam ${endedAt.toLocaleString()}`,
             startTime: startedAt.toISOString(),
-            endTime: segmentEndedAt.toISOString(),
+            endTime: endedAtForVideo.toISOString(),
             cameraId: segment.cameraId,
             cameraPosition: segment.cameraPosition,
             width: video.width,
@@ -197,14 +411,22 @@ export function RecordingScreen() {
         setCameraError(null);
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : 'The video could not be saved to the library.';
-        setCameraError(`The segment was finalized but could not be indexed: ${message}`);
+          error instanceof Error
+            ? error.message
+            : 'The video could not be saved to the library.';
+        setCameraError(
+          `The segment was finalized but could not be indexed: ${message}`,
+        );
         activeRef.current = false;
         clearTimers();
+        stopLocationUpdates();
         setError(message);
         if (Platform.OS === 'android') {
           stopRecordingForegroundService().catch(stopError => {
-            console.error('Could not stop the recording foreground service.', stopError);
+            console.error(
+              'Could not stop the recording foreground service.',
+              stopError,
+            );
           });
         }
         return;
@@ -214,23 +436,32 @@ export function RecordingScreen() {
         startSegmentRef.current().catch(error => {
           activeRef.current = false;
           clearTimers();
-          const message = error instanceof Error ? error.message : 'Could not start the next segment.';
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'Could not start the next segment.';
           setCameraError(message);
           setError(message);
           if (Platform.OS === 'android') {
             stopRecordingForegroundService().catch(stopError => {
-              console.error('Could not stop the recording foreground service.', stopError);
+              console.error(
+                'Could not stop the recording foreground service.',
+                stopError,
+              );
             });
           }
         });
       } else {
         clearTimers();
+        stopLocationUpdates();
         if (Platform.OS === 'android') {
           try {
             await stopRecordingForegroundService();
           } catch (error) {
             const message =
-              error instanceof Error ? error.message : 'Could not stop the recording service.';
+              error instanceof Error
+                ? error.message
+                : 'Could not stop the recording service.';
             setCameraError(message);
             setError(message);
             return;
@@ -245,6 +476,7 @@ export function RecordingScreen() {
       queryClient,
       setError,
       setStatus,
+      stopLocationUpdates,
     ],
   );
 
@@ -260,17 +492,23 @@ export function RecordingScreen() {
     finishSegments(completedSegments).catch(error => {
       activeRef.current = false;
       clearTimers();
+      stopLocationUpdates();
       const message =
-        error instanceof Error ? error.message : 'The segment could not be finalized.';
+        error instanceof Error
+          ? error.message
+          : 'The segment could not be finalized.';
       setCameraError(message);
       setError(message);
       if (Platform.OS === 'android') {
         stopRecordingForegroundService().catch(stopError => {
-          console.error('Could not stop the recording foreground service.', stopError);
+          console.error(
+            'Could not stop the recording foreground service.',
+            stopError,
+          );
         });
       }
     });
-  }, [clearTimers, finishSegments, setError]);
+  }, [clearTimers, finishSegments, setError, stopLocationUpdates]);
 
   const collectFinalizedSegment = useCallback(
     (segment: FinalizedCameraSegment) => {
@@ -313,7 +551,11 @@ export function RecordingScreen() {
             fps: selectedFps,
           },
         ];
-    if (cameras.some(camera => !camera.ref.current || !camera.device || !camera.format)) {
+    if (
+      cameras.some(
+        camera => !camera.ref.current || !camera.device || !camera.format,
+      )
+    ) {
       activeRef.current = false;
       clearTimers();
       const message = dualRecordingRef.current
@@ -334,7 +576,8 @@ export function RecordingScreen() {
       if (freeSpace < LOW_SPACE_LIMIT_BYTES) {
         activeRef.current = false;
         clearTimers();
-        const message = 'Recording stopped because less than 512 MB of storage remains.';
+        const message =
+          'Recording stopped because less than 512 MB of storage remains.';
         setCameraError(message);
         setError(message);
         return;
@@ -345,6 +588,13 @@ export function RecordingScreen() {
       setStatus('recording');
       expectedSegmentsRef.current = cameras.length;
       finalizedSegmentsRef.current = [];
+      const segmentStartedAtMs = Date.now();
+      telemetrySamplesRef.current = [];
+      telemetrySamplesRef.current.push({
+        timestampMs: segmentStartedAtMs,
+        headingDegrees: latestHeadingRef.current,
+        speedKph: latestSpeedRef.current,
+      });
       cameras.forEach(camera => {
         camera.ref.current?.startRecording({
           fileType: Platform.OS === 'ios' ? 'mov' : 'mp4',
@@ -354,6 +604,10 @@ export function RecordingScreen() {
               cameraId: camera.device?.id ?? 'unknown',
               cameraPosition: camera.position,
               frameRate: camera.fps,
+              startedAtMs: segmentStartedAtMs,
+              telemetrySamples: telemetrySamplesRef.current.filter(
+                sample => sample.timestampMs >= segmentStartedAtMs,
+              ),
             });
           },
           onRecordingError: error => {
@@ -368,15 +622,22 @@ export function RecordingScreen() {
               finalizedSegmentsRef.current.length + activePeers.length;
             if (activePeers.length === 0) {
               expectedSegmentsRef.current = 0;
+              stopLocationUpdates();
               if (Platform.OS === 'android') {
                 stopRecordingForegroundService().catch(stopError => {
-                  console.error('Could not stop the recording foreground service.', stopError);
+                  console.error(
+                    'Could not stop the recording foreground service.',
+                    stopError,
+                  );
                 });
               }
             }
             activePeers.forEach(peer => {
               peer.ref.current?.stopRecording().catch(stopError => {
-                console.error('Failed to stop the other camera after a recording error.', stopError);
+                console.error(
+                  'Failed to stop the other camera after a recording error.',
+                  stopError,
+                );
                 if (Platform.OS === 'android') {
                   stopRecordingForegroundService().catch(serviceError => {
                     console.error(
@@ -398,12 +659,17 @@ export function RecordingScreen() {
               activeRef.current = false;
               clearTimers();
               const message =
-                error instanceof Error ? error.message : 'Could not finalize the segment.';
+                error instanceof Error
+                  ? error.message
+                  : 'Could not finalize the segment.';
               setCameraError(message);
               setError(message);
               if (Platform.OS === 'android') {
                 stopRecordingForegroundService().catch(stopError => {
-                  console.error('Could not stop the recording foreground service.', stopError);
+                  console.error(
+                    'Could not stop the recording foreground service.',
+                    stopError,
+                  );
                 });
               }
             }),
@@ -412,12 +678,17 @@ export function RecordingScreen() {
           activeRef.current = false;
           clearTimers();
           const message =
-            error instanceof Error ? error.message : 'Could not finalize the segment.';
+            error instanceof Error
+              ? error.message
+              : 'Could not finalize the segment.';
           setCameraError(message);
           setError(message);
           if (Platform.OS === 'android') {
             stopRecordingForegroundService().catch(stopError => {
-              console.error('Could not stop the recording foreground service.', stopError);
+              console.error(
+                'Could not stop the recording foreground service.',
+                stopError,
+              );
             });
           }
         });
@@ -427,12 +698,18 @@ export function RecordingScreen() {
       expectedSegmentsRef.current = 0;
       finalizedSegmentsRef.current = [];
       clearTimers();
-      const message = error instanceof Error ? error.message : 'Unable to check free storage.';
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unable to check free storage.';
       setCameraError(message);
       setError(message);
       if (Platform.OS === 'android') {
         stopRecordingForegroundService().catch(stopError => {
-          console.error('Could not stop the recording foreground service.', stopError);
+          console.error(
+            'Could not stop the recording foreground service.',
+            stopError,
+          );
         });
       }
     }
@@ -455,6 +732,7 @@ export function RecordingScreen() {
     segmentSeconds,
     setError,
     setStatus,
+    stopLocationUpdates,
   ]);
 
   useEffect(() => {
@@ -475,17 +753,25 @@ export function RecordingScreen() {
       await Promise.all(
         activeCameras.map(camera => camera.current?.stopRecording()),
       );
+      stopLocationUpdates();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'The recording could not be stopped safely.';
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'The recording could not be stopped safely.';
+      stopLocationUpdates();
       setCameraError(message);
       setError(message);
       if (Platform.OS === 'android') {
         stopRecordingForegroundService().catch(stopError => {
-          console.error('Could not stop the recording foreground service.', stopError);
+          console.error(
+            'Could not stop the recording foreground service.',
+            stopError,
+          );
         });
       }
     }
-  }, [clearTimers, setError, setStatus]);
+  }, [clearTimers, setError, setStatus, stopLocationUpdates]);
 
   const startRecording = useCallback(async () => {
     if (startInProgressRef.current || activeRef.current) {
@@ -496,20 +782,29 @@ export function RecordingScreen() {
     try {
       if (
         dualCaptureEnabled &&
-        (!dualCaptureSupported || !frontDevice || !rearDevice || !frontFormat || !rearFormat)
+        (!dualCaptureSupported ||
+          !frontDevice ||
+          !rearDevice ||
+          !frontFormat ||
+          !rearFormat)
       ) {
         setCameraError(
           'Simultaneous front/rear recording is not supported or ready on this device. Choose single-camera mode.',
         );
         return;
       }
-      const permitted = hasCameraPermission || (await requestCameraPermission());
+      const permitted =
+        hasCameraPermission || (await requestCameraPermission());
       if (!permitted) {
-        setCameraError('Camera permission is required to record. Change it in system settings if denied.');
+        setCameraError(
+          'Camera permission is required to record. Change it in system settings if denied.',
+        );
         return;
       }
       if (!device) {
-        setCameraError(`No ${cameraPosition} camera is available on this device.`);
+        setCameraError(
+          `No ${cameraPosition} camera is available on this device.`,
+        );
         return;
       }
       if (!format) {
@@ -521,9 +816,24 @@ export function RecordingScreen() {
         canRecordAudio = await requestMicrophonePermission();
         setMicrophoneGranted(canRecordAudio);
         if (!canRecordAudio) {
-          setCameraError('Microphone access was not granted. Disable audio to record without sound.');
+          setCameraError(
+            'Microphone access was not granted. Disable audio to record without sound.',
+          );
           return;
         }
+      }
+
+      let locationTelemetryEnabled = false;
+      try {
+        locationTelemetryEnabled = await startLocationUpdates();
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Could not start GPS telemetry.';
+        setTelemetryError(`GPS speed unavailable: ${message}`);
+        latestSpeedRef.current = null;
+        setSpeedKph(null);
       }
 
       if (Platform.OS === 'android') {
@@ -539,29 +849,51 @@ export function RecordingScreen() {
             },
           );
         }
-        await startRecordingForegroundService(audioEnabled);
+        await startRecordingForegroundService(
+          audioEnabled,
+          locationTelemetryEnabled,
+        );
       }
 
       activeRef.current = true;
       dualRecordingRef.current = dualCaptureEnabled;
       sessionStartedAtRef.current = Date.now();
+      telemetrySamplesRef.current = [
+        {
+          timestampMs: sessionStartedAtRef.current,
+          headingDegrees: latestHeadingRef.current,
+          speedKph: latestSpeedRef.current,
+        },
+      ];
       setElapsedSeconds(0);
       elapsedTimerRef.current = setInterval(() => {
         const startedAt = sessionStartedAtRef.current;
         if (startedAt !== null) {
           setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
         }
+        telemetrySamplesRef.current.push({
+          timestampMs: Date.now(),
+          headingDegrees: latestHeadingRef.current,
+          speedKph: latestSpeedRef.current,
+        });
       }, 1000);
       await startSegment();
       if (!activeRef.current && Platform.OS === 'android') {
         await stopRecordingForegroundService();
       }
+      if (!activeRef.current) {
+        stopLocationUpdates();
+      }
     } catch (error) {
       activeRef.current = false;
       clearTimers();
+      stopLocationUpdates();
       if (Platform.OS === 'android') {
         stopRecordingForegroundService().catch(stopError => {
-          console.error('Could not stop the recording foreground service.', stopError);
+          console.error(
+            'Could not stop the recording foreground service.',
+            stopError,
+          );
         });
       }
       throw error;
@@ -587,6 +919,8 @@ export function RecordingScreen() {
     clearTimers,
     setElapsedSeconds,
     startSegment,
+    startLocationUpdates,
+    stopLocationUpdates,
   ]);
 
   useEffect(() => {
@@ -618,23 +952,30 @@ export function RecordingScreen() {
       const wasRecording = activeRef.current;
       activeRef.current = false;
       clearTimers();
+      stopLocationUpdates();
       if (wasRecording) {
         const activeCameras = dualRecordingRef.current
           ? [rearCameraRef, frontCameraRef]
           : [cameraRef];
         activeCameras.forEach(camera => {
           camera.current?.stopRecording().catch(error => {
-            console.error('Failed to finalize recording during screen teardown.', error);
+            console.error(
+              'Failed to finalize recording during screen teardown.',
+              error,
+            );
           });
         });
       }
       if (Platform.OS === 'android') {
         stopRecordingForegroundService().catch(error => {
-          console.error('Could not stop the recording foreground service.', error);
+          console.error(
+            'Could not stop the recording foreground service.',
+            error,
+          );
         });
       }
     },
-    [clearTimers],
+    [clearTimers, stopLocationUpdates],
   );
 
   const switchCamera = (position: CameraPosition) => {
@@ -646,14 +987,8 @@ export function RecordingScreen() {
   };
 
   return (
-    <Screen
-      title="Record"
-      subtitle={
-        Platform.OS === 'android'
-          ? 'An active recording uses an Android camera/microphone foreground service while locked; device policies can still interrupt capture.'
-          : 'Keep the app in the foreground while recording; iOS does not support locked-screen camera capture.'
-      }>
-      <Card style={styles.previewCard}>
+    <Screen fullscreen>
+      <View style={styles.fullscreenCamera}>
         <View style={styles.preview}>
           {hasCameraPermission &&
           dualCaptureEnabled &&
@@ -671,7 +1006,11 @@ export function RecordingScreen() {
                   device={rearDevice}
                   format={rearFormat}
                   fps={rearFps}
-                  isActive={activeRef.current || (isFocused && appState === 'active')}
+                  isActive={
+                    activeRef.current || (isFocused && appState === 'active')
+                  }
+                  resizeMode="contain"
+                  frameProcessor={vehicleDetector.frameProcessor}
                   video
                   audio={
                     audioEnabled &&
@@ -692,7 +1031,9 @@ export function RecordingScreen() {
                   device={frontDevice}
                   format={frontFormat}
                   fps={frontFps}
-                  isActive={activeRef.current || (isFocused && appState === 'active')}
+                  isActive={
+                    activeRef.current || (isFocused && appState === 'active')
+                  }
                   video
                   audio={
                     audioEnabled &&
@@ -707,20 +1048,29 @@ export function RecordingScreen() {
                 <Text style={styles.cameraLabel}>FRONT</Text>
               </View>
             </View>
-          ) :
-          hasCameraPermission &&
-          device &&
-          format &&
-          (appState === 'active' || activeRef.current) ? (
+          ) : hasCameraPermission &&
+            device &&
+            format &&
+            (appState === 'active' || activeRef.current) ? (
             <Camera
               ref={cameraRef}
               style={StyleSheet.absoluteFill}
               device={device}
               format={format}
               fps={selectedFps}
-              isActive={activeRef.current || (isFocused && appState === 'active')}
+              isActive={
+                activeRef.current || (isFocused && appState === 'active')
+              }
+              resizeMode="contain"
+              frameProcessor={
+                cameraPosition === 'back'
+                  ? vehicleDetector.frameProcessor
+                  : undefined
+              }
               video
-              audio={audioEnabled && (hasMicrophonePermission || microphoneGranted)}
+              audio={
+                audioEnabled && (hasMicrophonePermission || microphoneGranted)
+              }
               onError={error => {
                 setCameraError(error.message);
                 setError(`Camera error: ${error.message}`);
@@ -733,15 +1083,21 @@ export function RecordingScreen() {
                 {!hasCameraPermission
                   ? 'Camera permission is needed for preview'
                   : !device
-                    ? `${cameraPosition === 'back' ? 'Rear' : 'Front'} camera unavailable`
-                    : 'Camera preview paused'}
+                  ? `${
+                      cameraPosition === 'back' ? 'Rear' : 'Front'
+                    } camera unavailable`
+                  : 'Camera preview paused'}
               </Text>
               {!hasCameraPermission ? (
-                <ActionButton
+                <CameraIconButton
                   label="Allow camera"
+                  icon="camera"
                   onPress={() =>
                     requestCameraPermission().catch(error => {
-                      const message = error instanceof Error ? error.message : 'Camera permission request failed.';
+                      const message =
+                        error instanceof Error
+                          ? error.message
+                          : 'Camera permission request failed.';
                       setCameraError(message);
                     })
                   }
@@ -749,88 +1105,308 @@ export function RecordingScreen() {
               ) : null}
             </View>
           )}
-          <View style={styles.previewBadge}>
-            <StatusBadge
-              label={status === 'recording' ? 'REC' : status === 'finalizing' ? 'SAVING' : 'READY'}
-              tone={status === 'recording' ? 'danger' : 'neutral'}
-            />
-          </View>
+          {roadCameraAvailable ? (
+            <View
+              pointerEvents="none"
+              style={
+                dualCaptureEnabled && dualCaptureSupported
+                  ? styles.dualDetectionOverlay
+                  : StyleSheet.absoluteFill
+              }>
+              <DetectionOverlay frame={vehicleDetector.frame} />
+            </View>
+          ) : null}
         </View>
-        <View style={styles.details}>
-          <Label>
-            {dualCaptureEnabled && dualCaptureSupported && frontDevice && rearDevice
-              ? `Rear + front · ${rearFormat?.videoWidth ?? '—'}×${rearFormat?.videoHeight ?? '—'} / ${frontFormat?.videoWidth ?? '—'}×${frontFormat?.videoHeight ?? '—'}`
-              : device
-                ? `${device.name} · ${format?.videoWidth ?? '—'} × ${format?.videoHeight ?? '—'} · up to ${selectedFps} fps`
+        <View style={styles.cameraOverlay}>
+          <View style={styles.overlayTop}>
+            <View style={styles.overlayLeading}>
+              <CompassIndicator headingDegrees={headingDegrees} />
+              <StatusBadge
+                label={
+                  status === 'recording'
+                    ? 'REC'
+                    : status === 'finalizing'
+                    ? 'SAVING'
+                    : 'READY'
+                }
+                tone={status === 'recording' ? 'danger' : 'neutral'}
+              />
+            </View>
+            <Text style={styles.cameraInfo}>
+              {dualCaptureEnabled &&
+              dualCaptureSupported &&
+              frontDevice &&
+              rearDevice
+                ? `Rear + front · ${rearFormat?.videoWidth ?? '—'}×${
+                    rearFormat?.videoHeight ?? '—'
+                  }`
+                : device
+                ? `${device.name} · ${format?.videoWidth ?? '—'}×${
+                    format?.videoHeight ?? '—'
+                  } · ${selectedFps} fps`
                 : 'Camera capability unavailable'}
-          </Label>
-          <Label>
-            {audioEnabled
-              ? hasMicrophonePermission
-                ? 'Microphone enabled'
-                : 'Microphone permission needed'
-              : 'Microphone off'}
-            {' · '}
-            {formatBytes(LOW_SPACE_LIMIT_BYTES)} storage reserve
-          </Label>
-        </View>
-      </Card>
-
-      <Card style={styles.capabilityCard}>
-        <Label>
-          {Platform.OS !== 'android'
-            ? 'Dual-camera recording is unavailable in this iOS capture implementation. Use single-camera mode.'
-            : capabilityError
-              ? `Dual-camera capability could not be checked: ${capabilityError}`
-              : dualCaptureSupported
-                ? 'This Android device reports front/rear concurrent camera support. Dual recording creates two separate clips and may increase heat and battery use.'
-                : 'This Android device does not report front/rear concurrent camera support. Single-camera recording remains available.'}
-        </Label>
-        <ActionButton
-          label={dualCaptureEnabled ? 'Use single camera' : 'Use front + rear cameras'}
-          onPress={() => setDualCaptureEnabled(enabled => !enabled)}
-          variant="secondary"
-          disabled={!dualCaptureSupported || activeRef.current}
-        />
-      </Card>
-
-      {cameraError ? (
-        <Card>
-          <Label color={colors.danger}>{cameraError}</Label>
-        </Card>
-      ) : null}
-      {status === 'error' ? (
-        <Card>
-          <Label color={colors.danger}>
-            {recordingError ?? 'Recording stopped unexpectedly.'}
-          </Label>
-        </Card>
-      ) : null}
-      <View style={styles.controls}>
-        <ActionButton
-          label={status === 'recording' ? 'Stop recording' : status === 'finalizing' ? 'Saving clip…' : 'Start recording'}
-          onPress={() => {
-            const action = status === 'recording' ? stopRecording() : startRecording();
-            action.catch(error => {
-              const message = error instanceof Error ? error.message : 'The recording action failed.';
-              setCameraError(message);
-              setError(message);
-            });
-          }}
-          variant={status === 'recording' ? 'danger' : 'primary'}
-          disabled={status === 'finalizing'}
-        />
-        <View style={styles.secondaryControls}>
-          <ActionButton
-            label={cameraPosition === 'back' ? 'Switch to front' : 'Switch to rear'}
-            onPress={() => switchCamera(cameraPosition === 'back' ? 'front' : 'back')}
-            variant="secondary"
-            disabled={activeRef.current}
-          />
-          <Text style={styles.timer}>{formatClock(elapsedSeconds)}</Text>
+            </Text>
+          </View>
+          <View style={styles.overlayBottom}>
+            <Text style={styles.telemetryOverlay}>{telemetryDisplay}</Text>
+            {telemetryError ? (
+              <Text style={styles.audioStatus}>{telemetryError}</Text>
+            ) : null}
+            <Text style={styles.aiStatus}>
+              {vehicleDetector.status === 'loading'
+                ? 'AI: loading YOLOX-Nano COCO model'
+                : vehicleDetector.status === 'error'
+                ? `AI unavailable: ${
+                    vehicleDetector.error ??
+                    'The model could not be initialized.'
+                  }`
+                : vehicleDetector.status === 'disabled'
+                ? 'AI paused · select rear camera'
+                : `YOLOX-Nano COCO · up to ${vehicleDetector.inferenceFps} FPS`}
+            </Text>
+            <Text style={styles.audioStatus}>
+              {audioEnabled
+                ? hasMicrophonePermission || microphoneGranted
+                  ? 'Microphone on'
+                  : 'Microphone permission needed'
+                : 'Microphone off'}
+            </Text>
+            <Text style={styles.audioStatus}>
+              {capabilityError
+                ? `Camera capability check failed: ${capabilityError}`
+                : dualCaptureSupported
+                ? 'Front + rear capture is supported'
+                : 'Front + rear capture is unavailable on this device'}
+            </Text>
+            {cameraError || status === 'error' ? (
+              <Text style={styles.cameraError}>
+                {cameraError ??
+                  recordingError ??
+                  'Recording stopped unexpectedly.'}
+              </Text>
+            ) : null}
+            <View style={styles.cameraControls}>
+              <CameraIconButton
+                label={
+                  cameraPosition === 'back'
+                    ? 'Switch to front camera'
+                    : 'Switch to rear camera'
+                }
+                icon="switch"
+                onPress={() =>
+                  switchCamera(cameraPosition === 'back' ? 'front' : 'back')
+                }
+                disabled={activeRef.current}
+              />
+              <CameraIconButton
+                label={
+                  status === 'recording'
+                    ? 'Stop recording'
+                    : status === 'finalizing'
+                    ? 'Saving clip'
+                    : 'Start recording'
+                }
+                icon={status === 'recording' ? 'stop' : 'record'}
+                onPress={() => {
+                  const action =
+                    status === 'recording' ? stopRecording() : startRecording();
+                  action.catch(error => {
+                    const message =
+                      error instanceof Error
+                        ? error.message
+                        : 'The recording action failed.';
+                    setCameraError(message);
+                    setError(message);
+                  });
+                }}
+                variant={status === 'recording' ? 'danger' : 'primary'}
+                large
+                disabled={status === 'finalizing'}
+              />
+              <CameraIconButton
+                label={
+                  dualCaptureEnabled
+                    ? 'Use single camera'
+                    : 'Use front and rear cameras'
+                }
+                icon={dualCaptureEnabled ? 'single' : 'dual'}
+                onPress={() => setDualCaptureEnabled(enabled => !enabled)}
+                disabled={!dualCaptureSupported || activeRef.current}
+              />
+            </View>
+            <Text style={styles.timer}>{formatClock(elapsedSeconds)}</Text>
+          </View>
         </View>
       </View>
     </Screen>
+  );
+}
+
+function CameraIconButton({
+  label,
+  icon,
+  onPress,
+  disabled = false,
+  variant = 'secondary',
+  large = false,
+}: {
+  label: string;
+  icon: 'camera' | 'record' | 'stop' | 'switch' | 'dual' | 'single';
+  onPress: () => void;
+  disabled?: boolean;
+  variant?: 'primary' | 'secondary' | 'danger';
+  large?: boolean;
+}) {
+  const iconColor = colors.text;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{disabled}}
+      disabled={disabled}
+      hitSlop={8}
+      onPress={onPress}
+      style={({pressed}) => [
+        styles.cameraControlButton,
+        large && styles.largeCameraControlButton,
+        variant === 'primary' && styles.primaryCameraControlButton,
+        variant === 'danger' && styles.dangerCameraControlButton,
+        disabled && styles.disabledCameraControlButton,
+        pressed && !disabled && styles.pressedCameraControlButton,
+      ]}>
+      <Svg width={large ? 30 : 22} height={large ? 30 : 22} viewBox="0 0 24 24">
+        {icon === 'record' ? (
+          <Circle cx="12" cy="12" r="7" fill={iconColor} />
+        ) : icon === 'stop' ? (
+          <Rect x="6" y="6" width="12" height="12" rx="2" fill={iconColor} />
+        ) : icon === 'switch' ? (
+          <>
+            <Path
+              d="M5 8h14v11H5zM9 8l1.5-2h3L15 8"
+              fill="none"
+              stroke={iconColor}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+            <Circle
+              cx="12"
+              cy="13"
+              r="3"
+              fill="none"
+              stroke={iconColor}
+              strokeWidth="1.8"
+            />
+            <Path
+              d="M7 3 4 5l3 2m10 14 3-2-3-2"
+              fill="none"
+              stroke={iconColor}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+          </>
+        ) : icon === 'dual' ? (
+          <>
+            <Path
+              d="M2.5 8h8v9h-8zM13.5 8h8v9h-8z"
+              fill="none"
+              stroke={iconColor}
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+            <Circle
+              cx="6.5"
+              cy="12.5"
+              r="1.8"
+              fill="none"
+              stroke={iconColor}
+              strokeWidth="1.5"
+            />
+            <Circle
+              cx="17.5"
+              cy="12.5"
+              r="1.8"
+              fill="none"
+              stroke={iconColor}
+              strokeWidth="1.5"
+            />
+          </>
+        ) : icon === 'single' ? (
+          <>
+            <Path
+              d="M3 8h5l2-2h4l2 2h5v10H3z"
+              fill="none"
+              stroke={iconColor}
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+            <Circle
+              cx="12"
+              cy="13"
+              r="3"
+              fill="none"
+              stroke={iconColor}
+              strokeWidth="1.8"
+            />
+          </>
+        ) : (
+          <>
+            <Path
+              d="M3 8h5l2-3h5l2 3h4a1 1 0 0 1 1 1v10H2V9a1 1 0 0 1 1-1Z"
+              fill="none"
+              stroke={iconColor}
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+            <Circle
+              cx="12"
+              cy="13"
+              r="3"
+              fill="none"
+              stroke={iconColor}
+              strokeWidth="1.8"
+            />
+          </>
+        )}
+      </Svg>
+    </Pressable>
+  );
+}
+
+function CompassIndicator({headingDegrees}: {headingDegrees: number | null}) {
+  return (
+    <View style={styles.compassIndicator}>
+      <Svg width={28} height={28} viewBox="0 0 24 24">
+        <Circle
+          cx="12"
+          cy="12"
+          r="10"
+          fill="#08111DE8"
+          stroke="#FFFFFFAA"
+          strokeWidth="1.2"
+        />
+        <SvgText
+          x="12"
+          y="7.5"
+          fill="#FFFFFF"
+          fontSize="5"
+          fontWeight="700"
+          textAnchor="middle">
+          N
+        </SvgText>
+        <Path
+          d="M12 8.5 15 16l-3-1.6L9 16z"
+          fill="#FF453A"
+          transform={
+            headingDegrees === null
+              ? undefined
+              : `rotate(${-headingDegrees} 12 12)`
+          }
+        />
+      </Svg>
+      <Text style={styles.compassReading}>{formatHeading(headingDegrees)}</Text>
+    </View>
   );
 }
 
@@ -838,25 +1414,123 @@ function formatClock(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainder = seconds % 60;
-  return [hours, minutes, remainder].map(value => String(value).padStart(2, '0')).join(':');
+  return [hours, minutes, remainder]
+    .map(value => String(value).padStart(2, '0'))
+    .join(':');
 }
 
 const styles = StyleSheet.create({
-  previewCard: {padding: 8},
+  fullscreenCamera: {flex: 1, backgroundColor: '#020508'},
   preview: {
-    height: 290,
+    ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 13,
     backgroundColor: '#020508',
   },
+  cameraOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'space-between',
+    padding: spacing.md,
+  },
+  overlayTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  overlayLeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  compassIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 16,
+    backgroundColor: '#08111DE8',
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  compassReading: {
+    minWidth: 32,
+    color: colors.text,
+    fontSize: 11,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '700',
+  },
+  overlayBottom: {
+    gap: spacing.sm,
+    alignItems: 'stretch',
+  },
+  cameraControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.lg,
+  },
+  cameraControlButton: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#FFFFFF66',
+    backgroundColor: '#08111DE8',
+  },
+  largeCameraControlButton: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    borderWidth: 2,
+  },
+  primaryCameraControlButton: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  dangerCameraControlButton: {
+    backgroundColor: colors.danger,
+    borderColor: colors.danger,
+  },
+  disabledCameraControlButton: {opacity: 0.45},
+  pressedCameraControlButton: {opacity: 0.72},
+  cameraInfo: {
+    flex: 1,
+    color: colors.text,
+    fontSize: 12,
+    textAlign: 'right',
+  },
+  aiStatus: {color: colors.accent, fontSize: 12, fontWeight: '700'},
+  telemetryOverlay: {
+    alignSelf: 'center',
+    overflow: 'hidden',
+    borderRadius: 8,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    color: colors.text,
+    backgroundColor: '#08111DE8',
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  audioStatus: {color: colors.secondaryText, fontSize: 11},
+  cameraError: {color: colors.danger, fontSize: 12},
   dualPreview: {flex: 1, flexDirection: 'row', width: '100%'},
   cameraViewport: {
     flex: 1,
     overflow: 'hidden',
     borderColor: colors.border,
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  dualDetectionOverlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: '50%',
   },
   cameraLabel: {
     position: 'absolute',
@@ -869,13 +1543,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xs,
     paddingVertical: 2,
   },
-  capabilityCard: {gap: spacing.sm},
   previewMessage: {alignItems: 'center', gap: spacing.md, padding: spacing.md},
   previewGlyph: {color: colors.accent, fontSize: 38},
   previewText: {color: colors.secondaryText, textAlign: 'center'},
-  previewBadge: {position: 'absolute', top: spacing.sm, left: spacing.sm},
-  details: {gap: 5, padding: spacing.sm},
-  controls: {gap: spacing.sm},
-  secondaryControls: {flexDirection: 'row', alignItems: 'center', gap: spacing.md},
-  timer: {flex: 1, color: colors.text, fontSize: 25, fontVariant: ['tabular-nums'], textAlign: 'right'},
+  timer: {
+    alignSelf: 'center',
+    color: colors.text,
+    fontSize: 20,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'center',
+    textShadowColor: '#000000',
+    textShadowRadius: 4,
+  },
 });

@@ -994,12 +994,14 @@ export function LibraryScreen() {
 function IconButton({
   label,
   onPress,
+  onLongPress,
   disabled,
   children,
   compact = false,
 }: {
   label: string;
   onPress: () => void;
+  onLongPress?: () => void;
   disabled: boolean;
   children: React.ReactNode;
   compact?: boolean;
@@ -1011,6 +1013,7 @@ function IconButton({
       disabled={disabled}
       hitSlop={6}
       onPress={onPress}
+      onLongPress={onLongPress}
       style={({pressed}) => [
         styles.iconButton,
         compact && styles.compactIconButton,
@@ -1247,14 +1250,14 @@ function PlaybackOverlay({
             <Text style={styles.volumeText}>
               {Math.round((muted ? 0 : volume) * 100)}%
             </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Playback speed ${rate} times. Tap to change; long press for custom speed.`}
+            <IconButton
+              label={`Playback speed ${rate} times. Tap to change; long press for custom speed.`}
               onPress={onCycleSpeed}
               onLongPress={onCustomSpeed}
-              style={styles.speedButton}>
-              <Text style={styles.speedText}>{rate}×</Text>
-            </Pressable>
+              disabled={false}
+              compact>
+              <VideoIcon name="speed" size={18} />
+            </IconButton>
             {hasAudioTracks ? (
               <IconButton
                 label={`Switch audio track. Current track: ${audioTrackLabel}`}
@@ -1297,48 +1300,48 @@ function PlaybackOverlay({
               {'  '}
               {loopB === null ? 'B —' : `B ${formatPlayerTime(loopB)}`}
             </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Set loop start"
+            <IconButton
+              label="Set loop start"
               onPress={onSetLoopA}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>A</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Set loop end"
+              disabled={false}
+              compact>
+              <VideoIcon name="loopA" size={16} />
+            </IconButton>
+            <IconButton
+              label="Set loop end"
               onPress={onSetLoopB}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>B</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Clear A-B loop"
+              disabled={false}
+              compact>
+              <VideoIcon name="loopB" size={16} />
+            </IconButton>
+            <IconButton
+              label="Clear A-B loop"
               onPress={onClearLoop}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>A-B</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Jump to timestamp"
+              disabled={false}
+              compact>
+              <VideoIcon name="clearLoop" size={16} />
+            </IconButton>
+            <IconButton
+              label="Jump to timestamp"
               onPress={onJump}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>Go to</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Bookmark current timestamp"
+              disabled={false}
+              compact>
+              <VideoIcon name="jump" size={16} />
+            </IconButton>
+            <IconButton
+              label="Bookmark current timestamp"
               onPress={onAddBookmark}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>Mark</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Seek interval ${seekInterval} seconds. Tap to change.`}
+              disabled={false}
+              compact>
+              <VideoIcon name="bookmark" size={16} />
+            </IconButton>
+            <IconButton
+              label={`Seek interval ${seekInterval} seconds. Tap to change.`}
               onPress={onCycleSeekInterval}
-              style={styles.utilityButton}>
-              <Text style={styles.utilityText}>±{seekInterval}s</Text>
-            </Pressable>
+              disabled={false}
+              compact>
+              <VideoIcon name="seekInterval" size={16} />
+            </IconButton>
           </View>
           {bookmarks.length ? (
             <ScrollView
@@ -1346,18 +1349,14 @@ function PlaybackOverlay({
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.bookmarkRow}>
               {bookmarks.map((bookmark, index) => (
-                <Pressable
+                <IconButton
                   key={`${bookmark}-${index}`}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Seek to bookmark ${formatPlayerTime(
-                    bookmark,
-                  )}`}
+                  label={`Seek to bookmark ${formatPlayerTime(bookmark)}`}
                   onPress={() => onSeekBookmark(bookmark)}
-                  style={styles.utilityButton}>
-                  <Text style={styles.utilityText}>
-                    {formatPlayerTime(bookmark)}
-                  </Text>
-                </Pressable>
+                  disabled={false}
+                  compact>
+                  <VideoIcon name="bookmark" size={14} />
+                </IconButton>
               ))}
             </ScrollView>
           ) : null}
@@ -1495,7 +1494,14 @@ function VideoIcon({
     | 'repeat'
     | 'repeatOne'
     | 'shuffle'
-    | 'stats';
+    | 'stats'
+    | 'speed'
+    | 'loopA'
+    | 'loopB'
+    | 'clearLoop'
+    | 'jump'
+    | 'bookmark'
+    | 'seekInterval';
   color?: string;
   size?: number;
 }) {
@@ -1609,6 +1615,46 @@ function VideoIcon({
         />
       ) : name === 'stats' ? (
         <Path {...iconProps} d="M4 20h17M6 17v-5m5 5V6m5 11v-8m5 8v-4" />
+      ) : name === 'speed' ? (
+        <>
+          <Rect {...iconProps} x="4" y="7" width="16" height="10" rx="3" />
+          <Path {...iconProps} d="M7 7V5m10 2V5M4 12h16M9 16h1.5M13.5 16H15" />
+          <SvgText x="12" y="14" fill={color} fontSize="6" textAnchor="middle">
+            x
+          </SvgText>
+        </>
+      ) : name === 'loopA' || name === 'loopB' ? (
+        <>
+          <Rect {...iconProps} x="4" y="4" width="16" height="16" rx="4" />
+          <SvgText
+            x="12"
+            y="15"
+            fill={color}
+            fontSize="8"
+            fontWeight="700"
+            textAnchor="middle">
+            {name === 'loopA' ? 'A' : 'B'}
+          </SvgText>
+        </>
+      ) : name === 'clearLoop' ? (
+        <>
+          <Path {...iconProps} d="M6 6l12 12M18 6 6 18" />
+          <Path {...iconProps} d="M4 10h5m6 0h5" />
+        </>
+      ) : name === 'jump' ? (
+        <>
+          <Path {...iconProps} d="M5 12h6l2-4 3 8 3-6h3" />
+          <Path {...iconProps} d="M15 5l3 1-1 3" />
+        </>
+      ) : name === 'bookmark' ? (
+        <Path {...iconProps} d="M7 4h10a1 1 0 0 1 1 1v15l-6-4-6 4V5a1 1 0 0 1 1-1Z" />
+      ) : name === 'seekInterval' ? (
+        <>
+          <Path {...iconProps} d="M7 12h10M10 9l-3 3 3 3M14 9l3 3-3 3" />
+          <SvgText x="12" y="14.5" fill={color} fontSize="5.5" textAnchor="middle">
+            ±
+          </SvgText>
+        </>
       ) : name === 'volume' || name === 'muted' ? (
         <>
           <Path {...iconProps} d="M4 10v4h4l5 4V6l-5 4z" />
