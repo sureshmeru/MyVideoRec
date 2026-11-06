@@ -1,6 +1,7 @@
 import {NativeEventEmitter, NativeModules} from 'react-native';
 
 import type {CameraTelemetrySample} from './cameraTelemetry';
+import type {SpeedUnit} from './settingsStore';
 
 interface CameraTelemetryNativeModule {
   startHeadingUpdates(): void;
@@ -10,6 +11,7 @@ interface CameraTelemetryNativeModule {
     outputPath: string,
     startTimeMs: number,
     samples: CameraTelemetrySample[],
+    speedUnit: SpeedUnit,
   ): Promise<void>;
 }
 
@@ -46,6 +48,7 @@ export function applyVideoOverlay(
   outputPath: string,
   startTimeMs: number,
   samples: CameraTelemetrySample[],
+  speedUnit: SpeedUnit,
 ): Promise<void> {
   if (!nativeModule) {
     return Promise.reject(
@@ -57,5 +60,6 @@ export function applyVideoOverlay(
     outputPath,
     startTimeMs,
     samples,
+    speedUnit,
   );
 }

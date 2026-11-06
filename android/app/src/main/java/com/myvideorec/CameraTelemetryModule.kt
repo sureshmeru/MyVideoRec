@@ -93,6 +93,7 @@ class CameraTelemetryModule(
     outputPath: String,
     startTimeMs: Double,
     samples: ReadableArray,
+    speedUnit: String,
     promise: Promise,
   ) {
     val inputFile = File(inputPath)
@@ -116,7 +117,7 @@ class CameraTelemetryModule(
           )
           return@runOnUiThread
         }
-        val overlay = TelemetryOverlay(startTimeMs.toLong(), telemetry)
+        val overlay = TelemetryOverlay(startTimeMs.toLong(), telemetry, speedUnit)
         val editedMediaItem =
           EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(inputFile)))
             .setEffects(
@@ -199,11 +200,14 @@ class CameraTelemetryModule(
   private class TelemetryOverlay(
     private val startTimeMs: Long,
     private val samples: List<TelemetrySample>,
+    private val speedUnit: String,
   ) : BitmapOverlay() {
     private var overlayBitmap: Bitmap? = null
     private var overlayCanvas: Canvas? = null
     private val backgroundPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xB8000000.toInt() }
+    private val compassBackgroundPaint =
+      Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xE8000000.toInt() }
     private val textPaint =
       Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFFFFFFF.toInt()
@@ -260,12 +264,15 @@ class CameraTelemetryModule(
       textPaint.textSize = textSize
       compassPaint.strokeWidth = 3f * density
 
-      val speed =
+      val speedKph =
         sample?.speedKph
           ?.takeIf { it.isFinite() && it >= 0.0 && it <= 198.0 }
-          ?.roundToInt()
-          ?.toString() ?: "--"
-      val label = "${dateFormat.format(Date(timestampMs))} | $speed KMPH"
+      val speed = speedKph
+        ?.let { if (speedUnit == "mph") it / 1.609344 else it }
+        ?.roundToInt()
+        ?.toString() ?: "--"
+      val unitLabel = if (speedUnit == "mph") "MPH" else "KM/H"
+      val label = "${dateFormat.format(Date(timestampMs))} | $speed $unitLabel"
       val textWidth = textPaint.measureText(label)
       val textHeight = textPaint.descent() - textPaint.ascent()
       val boxWidth = textWidth + margin * 1.3f
@@ -284,10 +291,10 @@ class CameraTelemetryModule(
         textPaint,
       )
 
-      val compassRadius = 45f * density
+      val compassRadius = 64f * density
       val compassCenterX = margin + compassRadius
       val compassCenterY = margin + compassRadius
-      canvas.drawCircle(compassCenterX, compassCenterY, compassRadius, backgroundPaint)
+      canvas.drawCircle(compassCenterX, compassCenterY, compassRadius, compassBackgroundPaint)
       canvas.drawCircle(compassCenterX, compassCenterY, compassRadius * 0.68f, compassPaint)
       val heading = sample?.headingDegrees?.takeIf {
         it.isFinite() && it >= 0.0 && it < 360.0
@@ -304,7 +311,7 @@ class CameraTelemetryModule(
         }
         canvas.drawPath(pointer, arrowPaint)
         canvas.restore()
-        textPaint.textSize = 20f * density
+        textPaint.textSize = 26f * density
         textPaint.textAlign = Paint.Align.LEFT
         canvas.drawText(
           "${heading.roundToInt()}°",

@@ -29,11 +29,12 @@ import {StatusBadge} from '../components/UI';
 import {saveRecording} from '../data/database';
 import type {CameraPosition, Recording, TripPoint} from '../data/models';
 import {useVehicleDetector} from '../features/ai/useVehicleDetector';
-import {estimateSpeedMps} from '../features/trips/gpsPolicy';
 import {requestForegroundLocationPermission} from '../features/trips/locationPermissions';
 import {
   formatHeading,
   formatSpeed,
+  getCardinalDirection,
+  resolveCameraSpeedKph,
 } from '../features/recording/cameraTelemetry';
 import type {CameraTelemetrySample} from '../features/recording/cameraTelemetry';
 import {
@@ -43,6 +44,7 @@ import {
   subscribeToHeading,
 } from '../features/recording/cameraTelemetryNative';
 import {useSettingsStore} from '../features/recording/settingsStore';
+import type {SpeedUnit} from '../features/recording/settingsStore';
 import {getRecordingConfiguration} from '../features/recording/selectRecordingFormat';
 import {useRecordingStore} from '../features/recording/recordingStore';
 import {cleanupOldestRecordingsUntil} from '../features/storage/recordingFileService';
@@ -66,6 +68,7 @@ interface FinalizedCameraSegment {
   frameRate: number;
   startedAtMs: number;
   telemetrySamples: CameraTelemetrySample[];
+  speedUnit: SpeedUnit;
 }
 
 export function RecordingScreen() {
@@ -100,10 +103,12 @@ export function RecordingScreen() {
   const [telemetryError, setTelemetryError] = useState<string | null>(null);
   const [headingDegrees, setHeadingDegrees] = useState<number | null>(null);
   const [speedKph, setSpeedKph] = useState<number | null>(null);
+  const [compassExpanded, setCompassExpanded] = useState(false);
   const [clockTimestampMs, setClockTimestampMs] = useState(Date.now());
   const queryClient = useQueryClient();
   const isFocused = useIsFocused();
   const cameraPosition = useSettingsStore(state => state.cameraPosition);
+  const speedUnit = useSettingsStore(state => state.speedUnit);
   const setCameraPosition = useSettingsStore(state => state.setCameraPosition);
   const audioEnabled = useSettingsStore(state => state.audioEnabled);
   const segmentSeconds = useSettingsStore(state => state.segmentSeconds);
@@ -244,8 +249,21 @@ export function RecordingScreen() {
       );
       return false;
     }
+    if (
+      Platform.OS === 'android' &&
+      !(await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ))
+    ) {
+      setSpeedKph(null);
+      latestSpeedRef.current = null;
+      setTelemetryError(
+        'Precise location is required for GPS speed. Change this app’s location permission to Precise.',
+      );
+      return false;
+    }
 
-    setTelemetryError(null);
+    setTelemetryError('Waiting for a GPS fix…');
     if (locationWatchIdRef.current !== null) {
       return true;
     }
@@ -271,26 +289,32 @@ export function RecordingScreen() {
           accuracyMeters,
         };
         const providerSpeed = position.coords.speed;
-        let currentSpeedMps =
-          Number.isFinite(accuracyMeters) &&
-          accuracyMeters <= 30 &&
-          providerSpeed !== null &&
-          Number.isFinite(providerSpeed) &&
-          providerSpeed >= 0 &&
-          providerSpeed <= 55
-            ? providerSpeed
-            : null;
-        if (currentSpeedMps === null && accuracyMeters <= 20) {
-          currentSpeedMps = estimateSpeedMps(
-            lastLocationRef.current,
-            currentPoint,
-          );
+        const nextSpeedKph = resolveCameraSpeedKph(
+          providerSpeed,
+          accuracyMeters,
+          lastLocationRef.current,
+          currentPoint,
+        );
+        const previousTimestamp = lastLocationRef.current
+          ? new Date(lastLocationRef.current.recordedAt).getTime()
+          : null;
+        if (
+          accuracyMeters <= 20 &&
+          (nextSpeedKph !== null ||
+            previousTimestamp === null ||
+            position.timestamp - previousTimestamp >= 10_000)
+        ) {
+          lastLocationRef.current = currentPoint;
         }
-        lastLocationRef.current = currentPoint;
-        const nextSpeedKph =
-          currentSpeedMps === null ? null : currentSpeedMps * 3.6;
         latestSpeedRef.current = nextSpeedKph;
         setSpeedKph(nextSpeedKph);
+        setTelemetryError(
+          nextSpeedKph !== null
+            ? null
+            : accuracyMeters > 30
+            ? 'Waiting for a precise GPS fix. Enable Precise location and device location.'
+            : 'GPS is active; waiting for a reliable speed reading.',
+        );
       },
       error => {
         setTelemetryError(`GPS speed unavailable: ${error.message}`);
@@ -302,7 +326,8 @@ export function RecordingScreen() {
         distanceFilter: 0,
         interval: 1000,
         fastestInterval: 1000,
-        maximumAge: 1000,
+        maximumAge: 0,
+        timeout: 20_000,
       },
     );
     return true;
@@ -342,7 +367,10 @@ export function RecordingScreen() {
   const displayDate = new Date(displayTimestampMs);
   const telemetryDisplay =
     `${displayDate.toLocaleTimeString([], {hour12: false})} | ` +
-    `${displayDate.toLocaleDateString()} | ${formatSpeed(speedKph)} KMPH`;
+    `${displayDate.toLocaleDateString()} | ${formatSpeed(
+      speedKph,
+      speedUnit,
+    )} ${speedUnit === 'mph' ? 'MPH' : 'KM/H'}`;
 
   const finishSegments = useCallback(
     async (segments: FinalizedCameraSegment[]) => {
@@ -369,6 +397,7 @@ export function RecordingScreen() {
             overlayPath,
             segment.startedAtMs,
             segment.telemetrySamples,
+            segment.speedUnit,
           );
           await RNFS.moveFile(overlayPath, destinationPath);
           await RNFS.unlink(filePath);
@@ -605,6 +634,7 @@ export function RecordingScreen() {
               cameraPosition: camera.position,
               frameRate: camera.fps,
               startedAtMs: segmentStartedAtMs,
+              speedUnit,
               telemetrySamples: telemetrySamplesRef.current.filter(
                 sample => sample.timestampMs >= segmentStartedAtMs,
               ),
@@ -732,6 +762,7 @@ export function RecordingScreen() {
     segmentSeconds,
     setError,
     setStatus,
+    speedUnit,
     stopLocationUpdates,
   ]);
 
@@ -1120,7 +1151,11 @@ export function RecordingScreen() {
         <View style={styles.cameraOverlay}>
           <View style={styles.overlayTop}>
             <View style={styles.overlayLeading}>
-              <CompassIndicator headingDegrees={headingDegrees} />
+              <CompassIndicator
+                headingDegrees={headingDegrees}
+                expanded={compassExpanded}
+                onToggle={() => setCompassExpanded(expanded => !expanded)}
+              />
               <StatusBadge
                 label={
                   status === 'recording'
@@ -1374,39 +1409,66 @@ function CameraIconButton({
   );
 }
 
-function CompassIndicator({headingDegrees}: {headingDegrees: number | null}) {
+function CompassIndicator({
+  headingDegrees,
+  expanded,
+  onToggle,
+}: {
+  headingDegrees: number | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <View style={styles.compassIndicator}>
-      <Svg width={28} height={28} viewBox="0 0 24 24">
-        <Circle
-          cx="12"
-          cy="12"
-          r="10"
-          fill="#08111DE8"
-          stroke="#FFFFFFAA"
-          strokeWidth="1.2"
-        />
-        <SvgText
-          x="12"
-          y="7.5"
-          fill="#FFFFFF"
-          fontSize="5"
-          fontWeight="700"
-          textAnchor="middle">
-          N
-        </SvgText>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={expanded ? 'Hide compass' : 'Show compass'}
+      onPress={onToggle}
+      style={styles.compassIndicator}>
+      {expanded ? (
+        <Svg width={46} height={46} viewBox="0 0 24 24">
+          <Circle
+            cx="12"
+            cy="12"
+            r="10.5"
+            fill="transparent"
+            stroke="#FFFFFF99"
+            strokeWidth="1.2"
+          />
+          <SvgText
+            x="12"
+            y="7.5"
+            fill="#FFFFFF"
+            fontSize="5"
+            fontWeight="700"
+            textAnchor="middle">
+            N
+          </SvgText>
+          <Path
+            d="M12 8.5 15 16l-3-1.6L9 16z"
+            fill="#FF453A"
+            transform={
+              headingDegrees === null
+                ? undefined
+                : `rotate(${-headingDegrees} 12 12)`
+            }
+          />
+        </Svg>
+      ) : (
+        <Text style={styles.compassReading}>
+          {getCardinalDirection(headingDegrees)} {formatHeading(headingDegrees)}
+        </Text>
+      )}
+      <Svg width={18} height={18} viewBox="0 0 24 24">
         <Path
-          d="M12 8.5 15 16l-3-1.6L9 16z"
-          fill="#FF453A"
-          transform={
-            headingDegrees === null
-              ? undefined
-              : `rotate(${-headingDegrees} 12 12)`
-          }
+          d={expanded ? 'm7 14 5-5 5 5' : 'm7 10 5 5 5-5'}
+          fill="none"
+          stroke="#FFFFFF"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         />
       </Svg>
-      <Text style={styles.compassReading}>{formatHeading(headingDegrees)}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -1447,16 +1509,15 @@ const styles = StyleSheet.create({
   compassIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    borderRadius: 16,
-    backgroundColor: '#08111DE8',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+    gap: spacing.xs,
+    borderRadius: 24,
+    backgroundColor: 'transparent',
+    padding: spacing.xs,
   },
   compassReading: {
-    minWidth: 32,
+    minWidth: 62,
     color: colors.text,
-    fontSize: 11,
+    fontSize: 15,
     fontVariant: ['tabular-nums'],
     fontWeight: '700',
   },

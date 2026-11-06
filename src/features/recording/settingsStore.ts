@@ -5,6 +5,8 @@ import {createJSONStorage, persist} from 'zustand/middleware';
 import type {CameraPosition} from '../../data/models';
 import type {VideoCodec, VideoQuality, VideoResolution} from './videoSettings';
 
+export type SpeedUnit = 'kmh' | 'mph';
+
 interface RecordingSettings {
   cameraPosition: CameraPosition;
   audioEnabled: boolean;
@@ -14,6 +16,7 @@ interface RecordingSettings {
   videoQuality: VideoQuality;
   frameRate: number;
   videoCodec: VideoCodec;
+  speedUnit: SpeedUnit;
   customBitrateMbps: number | null;
   setCameraPosition: (position: CameraPosition) => void;
   setAudioEnabled: (enabled: boolean) => void;
@@ -23,6 +26,7 @@ interface RecordingSettings {
   setVideoQuality: (quality: VideoQuality) => void;
   setFrameRate: (frameRate: number) => void;
   setVideoCodec: (codec: VideoCodec) => void;
+  setSpeedUnit: (unit: SpeedUnit) => void;
   setCustomBitrateMbps: (bitrateMbps: number | null) => void;
 }
 
@@ -37,6 +41,7 @@ export const useSettingsStore = create<RecordingSettings>()(
       videoQuality: 'medium',
       frameRate: 30,
       videoCodec: 'h264',
+      speedUnit: 'kmh',
       customBitrateMbps: null,
       setCameraPosition: cameraPosition => set({cameraPosition}),
       setAudioEnabled: audioEnabled => set({audioEnabled}),
@@ -46,6 +51,7 @@ export const useSettingsStore = create<RecordingSettings>()(
       setVideoQuality: videoQuality => set({videoQuality}),
       setFrameRate: frameRate => set({frameRate}),
       setVideoCodec: videoCodec => set({videoCodec}),
+      setSpeedUnit: speedUnit => set({speedUnit}),
       setCustomBitrateMbps: customBitrateMbps => set({customBitrateMbps}),
     }),
     {
@@ -60,6 +66,7 @@ export const useSettingsStore = create<RecordingSettings>()(
         videoQuality: state.videoQuality,
         frameRate: state.frameRate,
         videoCodec: state.videoCodec,
+        speedUnit: state.speedUnit,
         customBitrateMbps: state.customBitrateMbps,
       }),
     },

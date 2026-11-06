@@ -59,6 +59,7 @@ export function CameraSettingsScreen() {
   const videoQuality = useSettingsStore(state => state.videoQuality);
   const frameRate = useSettingsStore(state => state.frameRate);
   const videoCodec = useSettingsStore(state => state.videoCodec);
+  const speedUnit = useSettingsStore(state => state.speedUnit);
   const customBitrateMbps = useSettingsStore(state => state.customBitrateMbps);
   const setVideoResolution = useSettingsStore(
     state => state.setVideoResolution,
@@ -66,6 +67,7 @@ export function CameraSettingsScreen() {
   const setVideoQuality = useSettingsStore(state => state.setVideoQuality);
   const setFrameRate = useSettingsStore(state => state.setFrameRate);
   const setVideoCodec = useSettingsStore(state => state.setVideoCodec);
+  const setSpeedUnit = useSettingsStore(state => state.setSpeedUnit);
   const setCustomBitrateMbps = useSettingsStore(
     state => state.setCustomBitrateMbps,
   );
@@ -309,6 +311,19 @@ export function CameraSettingsScreen() {
 
       <Card>
         <Text style={styles.heading}>CAMERA SETTINGS</Text>
+        <Text style={styles.sectionTitle}>Speed display unit</Text>
+        <ChoiceGroup
+          options={[
+            {id: 'kmh', label: 'km/h'},
+            {id: 'mph', label: 'mph'},
+          ]}
+          selected={speedUnit}
+          onSelect={value => setSpeedUnit(value as 'kmh' | 'mph')}
+          disabled={isRecording || !settingsReady}
+        />
+        <Label>
+          Changes speed units in the camera preview and recorded video overlay.
+        </Label>
         <Text style={styles.sectionTitle}>Video resolution</Text>
         {supportedResolutions.length > 0 ? (
           <ChoiceGroup

@@ -55,6 +55,7 @@ RCT_REMAP_METHOD(applyVideoOverlay,
                  outputPath:(NSString *)outputPath
                  startTimeMs:(nonnull NSNumber *)startTimeMs
                  samples:(NSArray<NSDictionary *> *)samples
+                 speedUnit:(NSString *)speedUnit
                  resolver:(RCTPromiseResolveBlock)resolve
                  rejecter:(RCTPromiseRejectBlock)reject)
 {
@@ -128,6 +129,7 @@ RCT_REMAP_METHOD(applyVideoOverlay,
                    renderSize:renderSize
                  startTimeMs:startTimeMs.doubleValue
                      samples:samples
+                   speedUnit:speedUnit
                     duration:CMTimeGetSeconds(videoDuration)];
   videoComposition.animationTool =
       [AVVideoCompositionCoreAnimationTool videoCompositionCoreAnimationToolWithPostProcessingAsVideoLayer:videoLayer
@@ -170,6 +172,7 @@ RCT_REMAP_METHOD(applyVideoOverlay,
                   renderSize:(CGSize)renderSize
                 startTimeMs:(double)startTimeMs
                     samples:(NSArray<NSDictionary *> *)samples
+                  speedUnit:(NSString *)speedUnit
                    duration:(double)duration
 {
   if (duration <= 0) {
@@ -211,12 +214,15 @@ RCT_REMAP_METHOD(applyVideoOverlay,
     double speed = [sample[@"speedKph"] isKindOfClass:[NSNumber class]]
         ? [sample[@"speedKph"] doubleValue]
         : -1;
+    double displaySpeed = [speedUnit isEqualToString:@"mph"] ? speed / 1.609344 : speed;
     NSString *speedText = isfinite(speed) && speed >= 0 && speed <= 198
-        ? [NSString stringWithFormat:@"%.0f", round(speed)]
+        ? [NSString stringWithFormat:@"%.0f", round(displaySpeed)]
         : @"--";
-    [labels addObject:[NSString stringWithFormat:@"%@ | %@ KMPH",
+    NSString *unitLabel = [speedUnit isEqualToString:@"mph"] ? @"MPH" : @"KM/H";
+    [labels addObject:[NSString stringWithFormat:@"%@ | %@ %@",
                        [formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:timestamp / 1000.0]],
-                       speedText]];
+                       speedText,
+                       unitLabel]];
     double heading = [sample[@"headingDegrees"] isKindOfClass:[NSNumber class]]
         ? [sample[@"headingDegrees"] doubleValue]
         : -1;
@@ -260,12 +266,12 @@ RCT_REMAP_METHOD(applyVideoOverlay,
     [parentLayer addSublayer:footer];
   }
 
-  CGFloat compassDiameter = 92.0 * scale;
+  CGFloat compassDiameter = 132.0 * scale;
   CGRect compassFrame = CGRectMake(margin, margin, compassDiameter, compassDiameter);
   CAShapeLayer *compass = [CAShapeLayer layer];
   compass.frame = compassFrame;
   compass.path = [UIBezierPath bezierPathWithOvalInRect:compass.bounds].CGPath;
-  compass.fillColor = [[UIColor colorWithWhite:0 alpha:0.72] CGColor];
+  compass.fillColor = [[UIColor colorWithWhite:0 alpha:0.91] CGColor];
   compass.strokeColor = UIColor.whiteColor.CGColor;
   compass.lineWidth = 2.0 * scale;
   [parentLayer addSublayer:compass];
